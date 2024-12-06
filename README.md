@@ -19,3 +19,17 @@ Renseigner ensuite les valeurs demandées dans le fichier.
 ## Exécution du script
 
 Exemple de requête : `python script.py --base-path /api/v1/pascal --method GET`
+
+### imgs
+
+help menu :
+![alt text](assets/help.png)
+
+normal menu :
+![alt text](assets/help-normal.png)
+
+runner menu :
+![alt text](assets/help-runner.png)
+
+runner-results :
+![alt text](assets/runner-results.png)
