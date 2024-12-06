@@ -1,142 +1,165 @@
-#!/usr/bin/env python3
-
 import argparse
 import requests
-import json
-import keyring
 import os
 import sys
+from urllib.parse import urljoin
+from dotenv import load_dotenv
+import json
 
-def get_access_token(args):
-    # Vérifier si le token est mis en cache
-    token = keyring.get_password('api_client_script', 'access_token')
-    if token:
-        return token
+GATEWAY_URL = "http://127.0.0.1:5000"
 
-    # Construire la requête d'authentification
-    auth_url = args.base_url + '/api/auth'
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    data = {}
 
-    if args.auth_method == 'smsession':
-        if not args.smsession:
-            print("Le SMSESSION est requis pour l'authentification SMSESSION.")
-            sys.exit(1)
-        headers['SMSESSION'] = args.smsession
-        data = {
-            'client_id': args.client_id,
-            'client_secret': args.client_secret,
-            'grant_type': args.grant_type,
-            'scope': args.scope
-        }
-    elif args.auth_method == 'service-account':
-        if not args.username or not args.password:
-            print("Le nom d'utilisateur et le mot de passe sont requis pour le compte de service.")
-            sys.exit(1)
-        data = {
-            'client_id': args.client_id,
-            'client_secret': args.client_secret,
-            'grant_type': args.grant_type,
-            'username': args.username,
-            'password': args.password,
-            'scope': args.scope
-        }
-    else:
-        print("Méthode d'authentification non prise en charge.")
-        sys.exit(1)
+class APIConfig:
+    def __init__(
+        self,
+        client_id,
+        client_secret,
+        username,
+        password,
+        smsession,
+        grant_type,
+        base_path,
+        endpoint,
+        method,
+        headers,
+        body,
+    ):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.username = username
+        self.password = password
+        self.smsession = smsession
+        self.grant_type = grant_type
+        self.base_path = base_path
+        self.endpoint = endpoint
+        self.method = method
+        self.headers = headers
+        self.body = body
 
-    response = requests.post(auth_url, headers=headers, data=data)
 
-    if response.status_code == 200:
-        access_token = response.json().get('access_token')
-        keyring.set_password('api_client_script', 'access_token', access_token)
-        return access_token
-    else:
-        print("Échec de l'obtention du jeton d'accès :", response.text)
-        sys.exit(1)
+def build_uri(base_path, endpoint):
+    api_index = base_path.find("/api")
+    clean_path = base_path[api_index:] if api_index != -1 else base_path
 
-def make_api_call(args, access_token):
-    url = args.base_url + args.url_path
-    headers = {'Authorization': 'Bearer ' + access_token}
+    # Construire l'URL complète
+    url = urljoin(GATEWAY_URL, clean_path)
+    if endpoint:
+        url = urljoin(url, endpoint)
 
-    # Ajouter des en-têtes supplémentaires
-    if args.headers:
-        for header in args.headers:
-            if ':' not in header:
-                print("Les en-têtes doivent être au format 'Clé: Valeur'.")
-                sys.exit(1)
-            key, value = header.split(':', 1)
-            headers[key.strip()] = value.strip()
+    print("URL:", url)
+    return url
 
-    # Gérer le corps de la requête
-    body = None
-    if args.body:
-        if os.path.isfile(args.body):
-            with open(args.body, 'r') as f:
-                body = json.load(f)
-        else:
-            try:
-                body = json.loads(args.body)
-            except json.JSONDecodeError:
-                print("Le corps JSON est invalide.")
-                sys.exit(1)
-        # Définir Content-Type si non spécifié
-        if 'Content-Type' not in headers:
-            headers['Content-Type'] = 'application/json'
 
-    method = args.method.upper()
-    response = None
+def authenticate(config):
+    token_url = urljoin(GATEWAY_URL, "/api/auth")
+    auth_payload = {
+        "client_id": config.client_id,
+        "client_secret": config.client_secret,
+        "grant_type": config.grant_type,
+    }
 
-    try:
-        if method == 'GET':
-            response = requests.get(url, headers=headers)
-        elif method in ['POST', 'PUT', 'PATCH']:
-            response = requests.request(method, url, headers=headers, json=body)
-        elif method == 'DELETE':
-            response = requests.delete(url, headers=headers)
-        else:
-            print("Méthode HTTP non prise en charge.")
-            sys.exit(1)
+    if config.grant_type == "password":
+        if not config.username or not config.password:
+            raise ValueError("Username and password are required for password grant type")
+        auth_payload["username"] = config.username
+        auth_payload["password"] = config.password
 
-        if response.status_code == 401:
-            # Le token a peut-être expiré, le supprimer du cache et réessayer
-            keyring.delete_password('api_client_script', 'access_token')
-            access_token = get_access_token(args)
-            headers['Authorization'] = 'Bearer ' + access_token
-            response = requests.request(method, url, headers=headers, json=body)
-    except Exception as e:
-        print("Erreur lors de l'appel API :", e)
-        sys.exit(1)
+    response = requests.post(token_url, data=auth_payload)
+    response.raise_for_status()
+    return response.json()["access_token"]
 
-    print("Code de statut :", response.status_code)
-    print("Réponse :", response.text)
+
+def call_api(config, token):
+    url = build_uri(config.base_path, config.endpoint)
+    headers = {header.split("=")[0]: header.split("=")[1] for header in (config.headers or [])}
+    headers["Authorization"] = f"Bearer {token}"
+
+    response = requests.request(config.method, url, headers=headers, data=config.body)
+    response.raise_for_status()
+    return response.json()
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Script Client API')
-    parser.add_argument('--auth-method', choices=['smsession', 'service-account'], required=True, help='Méthode d\'authentification à utiliser.')
-    parser.add_argument('--smsession', help='Token SMSESSION (requis pour smsession).')
-    parser.add_argument('--client-id', required=True, help='Identifiant du client.')
-    parser.add_argument('--client-secret', required=True, help='Secret du client.')
-    parser.add_argument('--grant-type', default='password', help='Type de grant OAuth2.')
-    parser.add_argument('--username', help='Nom d\'utilisateur (requis pour service-account).')
-    parser.add_argument('--password', help='Mot de passe (requis pour service-account).')
-    parser.add_argument('--scope', default='', help='Scopes OAuth2.')
-    parser.add_argument('--method', required=True, help='Méthode HTTP (GET, POST, etc.).')
-    parser.add_argument('--url-path', required=True, help='Chemin de l\'API à appeler.')
-    parser.add_argument('--headers', action='append', help='En-têtes supplémentaires (format: "Clé: Valeur").')
-    parser.add_argument('--body', help='Corps JSON en tant que chaîne ou chemin vers un fichier JSON.')
-    parser.add_argument('--base-url', default='https://pise.d.com', help='URL de base pour les appels API.')
+    # Charger les variables d'environnement depuis le fichier .env
+    load_dotenv()
+
+    # Récupération des secrets depuis .env
+    client_id = os.getenv("CLIENT_ID")
+    client_secret = os.getenv("CLIENT_SECRET")
+    username = os.getenv("USERNAME")
+    password = os.getenv("PASSWORD")
+    smsession = os.getenv("SMSESSION")
+
+    # Configuration de argparse
+    parser = argparse.ArgumentParser(description="Script pour appeler une API en production")
+    parser.add_argument(
+        "--grant-type",
+        help="Le type de grant_type à utiliser pour obtenir le token (e.g. 'password', 'client_credentials', etc.)",
+        default="password",
+    )
+    parser.add_argument(
+        "--base-path",
+        required=True,
+        help="Le path de base de l'API à appeler (ex: /api/v1)",
+        type=str,
+    )
+    parser.add_argument(
+        "--endpoint",
+        default="",
+        help="Un endpoint supplémentaire à ajouter après le base-path au besoin (ex: /pascal)",
+        type=str,
+    )
+    parser.add_argument(
+        "--method",
+        required=True,
+        choices=["GET", "POST", "PUT", "DELETE", "PATCH"],
+        help="La méthode HTTP à utiliser",
+    )
+    parser.add_argument(
+        "--headers",
+        nargs="*",
+        help='Des headers personnalisés au format key=value (ex: "X-Request-Id=1234" "Authorization=Bearer token")',
+    )
+    parser.add_argument(
+        "--body", type=str, help='Le body de la requête (en JSON) (ex: \'{"key1": "value1", "key2": "value2"}\')'
+    )
 
     args = parser.parse_args()
 
-    # Validation des arguments requis en fonction de la méthode d'authentification
-    if args.auth_method == 'smsession' and not args.smsession:
-        parser.error("--smsession est requis lorsque --auth-method est 'smsession'.")
-    if args.auth_method == 'service-account' and (not args.username or not args.password):
-        parser.error("--username et --password sont requis lorsque --auth-method est 'service-account'.")
+    # Création de l'objet de configuration
+    config = APIConfig(
+        client_id=client_id,
+        client_secret=client_secret,
+        username=username,
+        password=password,
+        smsession=smsession,
+        grant_type=args.grant_type,
+        base_path=args.base_path,
+        endpoint=args.endpoint,
+        method=args.method,
+        headers=args.headers,
+        body=args.body,
+    )
 
-    access_token = get_access_token(args)
-    make_api_call(args, access_token)
+    print("client_id:", config.client_id)
+    print("client_secret:", config.client_secret)
+    print("username:", config.username)
+    print("password:", config.password)
+    print("smsession:", config.smsession)
+    print("grant_type:", config.grant_type)
+    print("base_path:", config.base_path)
+    print("endpoint:", config.endpoint)
+    print("method:", config.method)
+    print("headers:", config.headers)
+    print("body:", config.body)
 
-if __name__ == '__main__':
+    # Authentification
+    token = authenticate(config)
+
+    # Appel à l'API
+    response = call_api(config, token)
+    print(json.dumps(response, indent=4))
+
+
+if __name__ == "__main__":
     main()
