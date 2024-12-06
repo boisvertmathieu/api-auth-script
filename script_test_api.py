@@ -31,8 +31,23 @@ def pascal():
 
 
 # Nouvel endpoint pour traiter le body JSON (POST)
-@app.route("/api/v1/pascal", methods=["POST"])
+@app.route("/api/v1/pascal/runner", methods=["POST"])
 def pascal_post():
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 400
+
+    data = request.get_json()
+
+    # Vérifier la structure du JSON
+    if not data or "data" not in data or "val" not in data["data"]:
+        return jsonify({"error": "Invalid JSON structure. Expected format: {'data': {'val': value}}"}), 400
+
+    # Extraire et retourner la valeur
+    return jsonify({"value": data["data"]["val"]})
+
+
+@app.route("/api/v1/pascal/runner", methods=["GET"])
+def pascal_get():
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 400
 
